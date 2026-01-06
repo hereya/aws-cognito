@@ -56,8 +56,8 @@ import {
   RespondToAuthChallengeCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 
-const client = new CognitoIdentityProviderClient({ region: process.env.AWS_COGNITO_REGION });
-const clientId = process.env.AWS_COGNITO_USER_POOL_CLIENT_ID;
+const client = new CognitoIdentityProviderClient({ region: process.env.awsCognitoRegion });
+const clientId = process.env.userPoolClientId;
 
 // Sign up new user
 await client.send(new SignUpCommand({
@@ -103,7 +103,7 @@ The package exports these values after deployment:
 | `userPoolClientId` | User Pool Client ID | `1abc2def3ghi4jkl` |
 | `otpTableName` | DynamoDB OTP table name | `Stack-OtpCodesTable-XYZ` |
 | `sessionsTableName` | DynamoDB sessions table name | `Stack-SessionsTable-XYZ` |
-| `region` | AWS region | `eu-west-1` |
+| `awsCognitoRegion` | AWS region | `eu-west-1` |
 | `iamPolicyForCognito` | IAM policy JSON for app permissions | `{"Version":"2012-10-17",...}` |
 
 Access outputs:
@@ -176,7 +176,7 @@ import {
 import crypto from 'crypto';
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TABLE_NAME = process.env.SESSIONS_TABLE_NAME!;
+const TABLE_NAME = process.env.sessionsTableName!;
 const SESSION_TTL_SECONDS = 30 * 24 * 3600; // 30 days
 
 export interface Session {
@@ -237,8 +237,8 @@ import { jwtDecode } from 'jwt-decode';
 import { CognitoIdentityProviderClient, InitiateAuthCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { getSession, deleteSession } from '../lib/sessions';
 
-const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
-const CLIENT_ID = process.env.COGNITO_CLIENT_ID!;
+const cognito = new CognitoIdentityProviderClient({ region: process.env.awsCognitoRegion });
+const CLIENT_ID = process.env.userPoolClientId!;
 
 function isTokenExpired(token: string): boolean {
   try {
@@ -315,8 +315,8 @@ import {
 import { createSession, deleteSession, deleteUserSessions } from '../lib/sessions';
 
 const auth = new Hono();
-const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
-const clientId = process.env.COGNITO_CLIENT_ID!;
+const cognito = new CognitoIdentityProviderClient({ region: process.env.awsCognitoRegion });
+const clientId = process.env.userPoolClientId!;
 
 const cookieOptions = {
   httpOnly: true,
@@ -589,7 +589,7 @@ This can occur when:
 - Using wrong auth flow (must use `CUSTOM_AUTH`)
 
 ### ResourceNotFoundException: User pool does not exist
-Check that `AWS_COGNITO_USER_POOL_ID` and region are correct:
+Check that `userPoolId` and `awsCognitoRegion` are correct:
 ```bash
 hereya env
 ```

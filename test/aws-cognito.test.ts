@@ -288,8 +288,8 @@ describe('AwsCognitoStack', () => {
       });
     });
 
-    test('has region output', () => {
-      template.hasOutput('region', {
+    test('has awsCognitoRegion output', () => {
+      template.hasOutput('awsCognitoRegion', {
         Description: 'AWS Region',
       });
     });

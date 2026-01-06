@@ -174,7 +174,7 @@ export class AwsCognitoStack extends cdk.Stack {
       description: 'DynamoDB Sessions Table Name',
     });
 
-    new cdk.CfnOutput(this, 'region', {
+    new cdk.CfnOutput(this, 'awsCognitoRegion', {
       value: this.region,
       description: 'AWS Region',
     });
