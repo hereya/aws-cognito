@@ -4,7 +4,7 @@ A Hereya package that provides passwordless email OTP authentication using AWS C
 
 ## Overview
 
-This package (`hereya/aws-cognito`) provides a complete passwordless authentication solution:
+This package (`aws/cognito`) provides a complete passwordless authentication solution:
 - **Email-only Sign-in**: Users authenticate with email + OTP, no passwords required
 - **Custom Auth Flow**: Cognito Lambda triggers handle OTP generation and verification
 - **Auto-confirmation**: Users are auto-confirmed on signup, email verified after first successful OTP
@@ -31,7 +31,7 @@ This package (`hereya/aws-cognito`) provides a complete passwordless authenticat
 
 ```bash
 # Add Cognito authentication to your project
-hereya add hereya/aws-cognito
+hereya add aws/cognito
 ```
 
 ## Quick Start
@@ -668,7 +668,7 @@ The exact policy is available in the `iamPolicyForCognito` stack output.
 ## Support
 
 For issues or questions:
-- Create an issue in the [package repository](https://github.com/hereya/aws-cognito)
+- Create an issue in the [package repository](https://github.com/hereya/aws-cognito-package)
 - Check the [Hereya documentation](https://docs.hereya.dev)
 
 ## License
