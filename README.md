@@ -93,26 +93,6 @@ const authResponse = await client.send(new RespondToAuthChallengeCommand({
 const { AccessToken, IdToken, RefreshToken } = authResponse.AuthenticationResult;
 ```
 
-## Configuration
-
-Configure parameters in your Hereya workspace or via environment variables.
-
-### Stack Parameters
-
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `OTP_EXPIRY_SECONDS` | number | OTP validity period in seconds | `300` (5 min) |
-
-### Environment Variables (Output)
-
-| Variable | Description |
-|----------|-------------|
-| `AWS_COGNITO_USER_POOL_ID` | Cognito User Pool ID |
-| `AWS_COGNITO_USER_POOL_CLIENT_ID` | User Pool Client ID |
-| `AWS_COGNITO_OTP_TABLE_NAME` | DynamoDB table for OTP storage |
-| `AWS_COGNITO_SESSIONS_TABLE_NAME` | DynamoDB table for server-side sessions |
-| `AWS_COGNITO_REGION` | AWS region |
-
 ## Outputs
 
 The package exports these values after deployment:
