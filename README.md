@@ -110,6 +110,7 @@ Configure parameters in your Hereya workspace or via environment variables.
 | `AWS_COGNITO_USER_POOL_ID` | Cognito User Pool ID |
 | `AWS_COGNITO_USER_POOL_CLIENT_ID` | User Pool Client ID |
 | `AWS_COGNITO_OTP_TABLE_NAME` | DynamoDB table for OTP storage |
+| `AWS_COGNITO_SESSIONS_TABLE_NAME` | DynamoDB table for server-side sessions |
 | `AWS_COGNITO_REGION` | AWS region |
 
 ## Outputs
@@ -121,6 +122,7 @@ The package exports these values after deployment:
 | `userPoolId` | Cognito User Pool ID | `eu-west-1_abc123` |
 | `userPoolClientId` | User Pool Client ID | `1abc2def3ghi4jkl` |
 | `otpTableName` | DynamoDB OTP table name | `Stack-OtpCodesTable-XYZ` |
+| `sessionsTableName` | DynamoDB sessions table name | `Stack-SessionsTable-XYZ` |
 | `region` | AWS region | `eu-west-1` |
 | `iamPolicyForCognito` | IAM policy JSON for app permissions | `{"Version":"2012-10-17",...}` |
 
@@ -174,46 +176,188 @@ async function verifyOtp(email: string, otp: string, session: string) {
 }
 ```
 
-### Hono Server Integration (Secure with Cookies + JSX)
+### Hono Server Integration (Secure with Server-Side Sessions)
+
+This example stores refresh tokens server-side in DynamoDB, with only a session ID sent to the browser.
+
+#### Session Store Library
+
+```typescript
+// lib/sessions.ts
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  GetCommand,
+  DeleteCommand,
+  QueryCommand,
+  BatchWriteCommand,
+} from '@aws-sdk/lib-dynamodb';
+import crypto from 'crypto';
+
+const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const TABLE_NAME = process.env.SESSIONS_TABLE_NAME!;
+const SESSION_TTL_SECONDS = 30 * 24 * 3600; // 30 days
+
+export interface Session {
+  userId: string;
+  refreshToken: string;
+}
+
+export async function createSession(userId: string, refreshToken: string): Promise<string> {
+  const sessionId = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+
+  await client.send(new PutCommand({
+    TableName: TABLE_NAME,
+    Item: { sessionId, userId, refreshToken, createdAt: new Date().toISOString(), ttl: now + SESSION_TTL_SECONDS },
+  }));
+
+  return sessionId;
+}
+
+export async function getSession(sessionId: string): Promise<Session | null> {
+  const result = await client.send(new GetCommand({ TableName: TABLE_NAME, Key: { sessionId } }));
+  if (!result.Item) return null;
+  return { userId: result.Item.userId, refreshToken: result.Item.refreshToken };
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await client.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { sessionId } }));
+}
+
+export async function deleteUserSessions(userId: string): Promise<void> {
+  const result = await client.send(new QueryCommand({
+    TableName: TABLE_NAME,
+    IndexName: 'userId-index',
+    KeyConditionExpression: 'userId = :uid',
+    ExpressionAttributeValues: { ':uid': userId },
+    ProjectionExpression: 'sessionId',
+  }));
+
+  if (!result.Items?.length) return;
+
+  // Batch delete (max 25 per batch)
+  for (let i = 0; i < result.Items.length; i += 25) {
+    const batch = result.Items.slice(i, i + 25).map((item) => ({
+      DeleteRequest: { Key: { sessionId: item.sessionId } },
+    }));
+    await client.send(new BatchWriteCommand({ RequestItems: { [TABLE_NAME]: batch } }));
+  }
+}
+```
+
+#### Auth Middleware with Auto-Refresh
+
+```typescript
+// middleware/auth.ts
+import { Context, Next } from 'hono';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+import { jwtDecode } from 'jwt-decode';
+import { CognitoIdentityProviderClient, InitiateAuthCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { getSession, deleteSession } from '../lib/sessions';
+
+const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
+const CLIENT_ID = process.env.COGNITO_CLIENT_ID!;
+
+function isTokenExpired(token: string): boolean {
+  try {
+    const decoded = jwtDecode<{ exp: number }>(token);
+    return decoded.exp * 1000 < Date.now() + 30_000; // 30s buffer
+  } catch {
+    return true;
+  }
+}
+
+export async function authMiddleware(c: Context, next: Next) {
+  const accessToken = getCookie(c, 'access_token');
+  const sessionId = getCookie(c, 'session_id');
+
+  // Valid access token - proceed
+  if (accessToken && !isTokenExpired(accessToken)) {
+    c.set('accessToken', accessToken);
+    return next();
+  }
+
+  // Try to refresh using server-side stored refresh token
+  if (sessionId) {
+    const session = await getSession(sessionId);
+
+    if (session) {
+      try {
+        const response = await cognito.send(new InitiateAuthCommand({
+          AuthFlow: 'REFRESH_TOKEN_AUTH',
+          ClientId: CLIENT_ID,
+          AuthParameters: { REFRESH_TOKEN: session.refreshToken },
+        }));
+
+        const newAccessToken = response.AuthenticationResult?.AccessToken;
+        if (newAccessToken) {
+          setCookie(c, 'access_token', newAccessToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'Strict',
+            maxAge: 3600,
+            path: '/',
+          });
+
+          c.set('accessToken', newAccessToken);
+          c.set('userId', session.userId);
+          return next();
+        }
+      } catch (error) {
+        console.error('Token refresh failed:', error);
+      }
+    }
+
+    // Session invalid or refresh failed
+    await deleteSession(sessionId);
+    deleteCookie(c, 'session_id');
+  }
+
+  deleteCookie(c, 'access_token');
+  return c.redirect('/login');
+}
+```
+
+#### Auth Routes with Server-Side Sessions
 
 ```tsx
+// routes/auth.tsx
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+import { jwtDecode } from 'jwt-decode';
 import {
   CognitoIdentityProviderClient,
-  SignUpCommand,
   InitiateAuthCommand,
   RespondToAuthChallengeCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { createSession, deleteSession, deleteUserSessions } from '../lib/sessions';
 
-const app = new Hono();
-const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_COGNITO_REGION });
-const clientId = process.env.AWS_COGNITO_USER_POOL_CLIENT_ID!;
+const auth = new Hono();
+const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
+const clientId = process.env.COGNITO_CLIENT_ID!;
 
 const cookieOptions = {
   httpOnly: true,
-  secure: true,
-  sameSite: 'Lax' as const,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'Strict' as const,
   path: '/',
 };
 
-// Login page
-app.get('/login', (c) => {
+auth.get('/login', (c) => {
   return c.html(
-    <html>
-      <body>
-        <h1>Login</h1>
-        <form method="post" action="/auth/login">
-          <input type="email" name="email" placeholder="Email" required />
-          <button type="submit">Send OTP</button>
-        </form>
-      </body>
-    </html>
+    <html><body>
+      <h1>Login</h1>
+      <form method="post" action="/auth/login">
+        <input type="email" name="email" placeholder="Email" required />
+        <button type="submit">Send OTP</button>
+      </form>
+    </body></html>
   );
 });
 
-// Handle login - send OTP and show verify form
-app.post('/auth/login', async (c) => {
+auth.post('/login', async (c) => {
   const { email } = await c.req.parseBody();
 
   const response = await cognito.send(new InitiateAuthCommand({
@@ -222,110 +366,108 @@ app.post('/auth/login', async (c) => {
     AuthParameters: { USERNAME: String(email) },
   }));
 
-  // Store session in httpOnly cookie (not exposed to JS)
-  setCookie(c, 'auth_session', response.Session!, { ...cookieOptions, maxAge: 300 });
+  setCookie(c, 'cognito_session', response.Session!, { ...cookieOptions, maxAge: 300 });
   setCookie(c, 'auth_email', String(email), { ...cookieOptions, maxAge: 300 });
 
   // Send OTP via your email service
   await sendEmail(String(email), response.ChallengeParameters!.otp);
 
   return c.html(
-    <html>
-      <body>
-        <h1>Enter OTP</h1>
-        <p>We sent a code to {String(email)}</p>
-        <form method="post" action="/auth/verify">
-          <input type="text" name="otp" placeholder="Enter 6-digit code" maxLength={6} required />
-          <button type="submit">Verify</button>
-        </form>
-      </body>
-    </html>
+    <html><body>
+      <h1>Enter OTP</h1>
+      <p>We sent a code to {String(email)}</p>
+      <form method="post" action="/auth/verify">
+        <input type="text" name="otp" placeholder="6-digit code" maxLength={6} required />
+        <button type="submit">Verify</button>
+      </form>
+    </body></html>
   );
 });
 
-// Verify OTP and set auth cookies
-app.post('/auth/verify', async (c) => {
+auth.post('/verify', async (c) => {
   const { otp } = await c.req.parseBody();
-  const session = getCookie(c, 'auth_session');
+  const cognitoSession = getCookie(c, 'cognito_session');
   const email = getCookie(c, 'auth_email');
 
-  if (!session || !email) {
-    return c.redirect('/login');
-  }
+  if (!cognitoSession || !email) return c.redirect('/auth/login');
 
   try {
     const response = await cognito.send(new RespondToAuthChallengeCommand({
       ClientId: clientId,
       ChallengeName: 'CUSTOM_CHALLENGE',
-      Session: session,
+      Session: cognitoSession,
       ChallengeResponses: { USERNAME: email, ANSWER: String(otp) },
     }));
 
     const { AccessToken, IdToken, RefreshToken, ExpiresIn } = response.AuthenticationResult!;
+    const decoded = jwtDecode<{ sub: string }>(IdToken!);
 
-    // Clear temporary auth cookies
-    deleteCookie(c, 'auth_session');
+    // Store refresh token SERVER-SIDE, get session ID
+    const sessionId = await createSession(decoded.sub, RefreshToken!);
+
+    // Clear temporary cookies
+    deleteCookie(c, 'cognito_session');
     deleteCookie(c, 'auth_email');
 
-    // Set tokens in httpOnly cookies (never exposed to JavaScript)
+    // Session ID cookie (long-lived, used to retrieve refresh token)
+    setCookie(c, 'session_id', sessionId, { ...cookieOptions, maxAge: 30 * 24 * 3600 });
+
+    // Access token cookie (short-lived)
     setCookie(c, 'access_token', AccessToken!, { ...cookieOptions, maxAge: ExpiresIn });
-    setCookie(c, 'id_token', IdToken!, { ...cookieOptions, maxAge: ExpiresIn });
-    setCookie(c, 'refresh_token', RefreshToken!, { ...cookieOptions, maxAge: 30 * 24 * 60 * 60 });
 
     return c.redirect('/dashboard');
   } catch (error) {
     return c.html(
-      <html>
-        <body>
-          <h1>Invalid OTP</h1>
-          <p>Please try again or <a href="/login">request a new code</a></p>
-        </body>
-      </html>
+      <html><body>
+        <h1>Invalid OTP</h1>
+        <a href="/auth/login">Try again</a>
+      </body></html>
     );
   }
 });
 
-// Protected route example
-app.get('/dashboard', async (c) => {
-  const accessToken = getCookie(c, 'access_token');
-  if (!accessToken) {
-    return c.redirect('/login');
-  }
-  return c.html(
-    <html>
-      <body>
-        <h1>Dashboard</h1>
-        <p>You are authenticated!</p>
-        <form method="post" action="/auth/logout">
-          <button type="submit">Logout</button>
-        </form>
-      </body>
-    </html>
-  );
+auth.post('/logout', async (c) => {
+  const sessionId = getCookie(c, 'session_id');
+  if (sessionId) await deleteSession(sessionId);
+  deleteCookie(c, 'session_id');
+  deleteCookie(c, 'access_token');
+  return c.redirect('/auth/login');
 });
 
-// Logout
-app.post('/auth/logout', (c) => {
+// Logout from all devices
+auth.post('/logout-everywhere', async (c) => {
+  const userId = c.get('userId');
+  if (userId) await deleteUserSessions(userId);
+  deleteCookie(c, 'session_id');
   deleteCookie(c, 'access_token');
-  deleteCookie(c, 'id_token');
-  deleteCookie(c, 'refresh_token');
-  return c.redirect('/login');
+  return c.redirect('/auth/login');
 });
+
+export { auth };
 ```
 
-### Token Refresh
+#### Main Application
 
 ```typescript
-async function refreshTokens(refreshToken: string) {
-  const response = await client.send(new InitiateAuthCommand({
-    AuthFlow: 'REFRESH_TOKEN_AUTH',
-    ClientId: clientId,
-    AuthParameters: {
-      REFRESH_TOKEN: refreshToken,
-    },
-  }));
-  return response.AuthenticationResult;
-}
+// index.ts
+import { Hono } from 'hono';
+import { auth } from './routes/auth';
+import { authMiddleware } from './middleware/auth';
+
+const app = new Hono();
+
+// Public routes
+app.route('/auth', auth);
+
+// Protected routes (middleware auto-refreshes tokens)
+app.use('/dashboard/*', authMiddleware);
+app.use('/api/*', authMiddleware);
+
+app.get('/dashboard', (c) => {
+  return c.html(<html><body><h1>Dashboard</h1><p>Authenticated!</p></body></html>);
+});
+
+export default app;
 ```
 
 ## Authentication Flow
@@ -393,10 +535,18 @@ User                    App                     Cognito                Lambda   
 │  └──────────────────│──────────────────────────│────────────┘  │
 │                     │                          │                │
 │  ┌──────────────────▼──────────────────────────▼────────────┐  │
-│  │                    DynamoDB Table                         │  │
+│  │                 DynamoDB OTP Table                        │  │
 │  │  • Partition Key: email                                   │  │
 │  │  • TTL: automatic OTP expiration                          │  │
 │  │  • PAY_PER_REQUEST billing                                │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              DynamoDB Sessions Table                      │  │
+│  │  • Partition Key: sessionId                               │  │
+│  │  • GSI: userId-index (for logout everywhere)              │  │
+│  │  • TTL: automatic session expiration (30 days)            │  │
+│  │  • AWS-managed encryption at rest                         │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │

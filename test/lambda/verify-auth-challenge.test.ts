@@ -290,12 +290,14 @@ describe('VerifyAuthChallenge Lambda', () => {
 
   describe('error handling', () => {
     test('returns answerCorrect=false on DynamoDB error', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
       mockDynamoSend.mockRejectedValueOnce(new Error('DynamoDB error'));
 
       const event = createEvent('123456');
       const result = await handler(event, mockContext, mockCallback);
 
       expect(result?.response.answerCorrect).toBe(false);
+      consoleSpy.mockRestore();
     });
   });
 });

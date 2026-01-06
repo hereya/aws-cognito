@@ -11,6 +11,7 @@ export class AwsCognitoStack extends cdk.Stack {
   public readonly userPool: cognito.UserPool;
   public readonly userPoolClient: cognito.UserPoolClient;
   public readonly otpTable: dynamodb.Table;
+  public readonly sessionsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -21,6 +22,21 @@ export class AwsCognitoStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'ttl',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // DynamoDB Table for user sessions (server-side refresh token storage)
+    this.sessionsTable = new dynamodb.Table(this, 'SessionsTable', {
+      partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // GSI to find all sessions for a user (logout everywhere)
+    this.sessionsTable.addGlobalSecondaryIndex({
+      indexName: 'userId-index',
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
     });
 
     // Common Lambda configuration
@@ -153,6 +169,11 @@ export class AwsCognitoStack extends cdk.Stack {
       description: 'DynamoDB OTP Table Name',
     });
 
+    new cdk.CfnOutput(this, 'sessionsTableName', {
+      value: this.sessionsTable.tableName,
+      description: 'DynamoDB Sessions Table Name',
+    });
+
     new cdk.CfnOutput(this, 'region', {
       value: this.region,
       description: 'AWS Region',
@@ -177,6 +198,21 @@ export class AwsCognitoStack extends cdk.Stack {
             'cognito-idp:ChangePassword',
           ],
           Resource: this.userPool.userPoolArn,
+        },
+        {
+          Sid: 'SessionsTableOperations',
+          Effect: 'Allow',
+          Action: [
+            'dynamodb:PutItem',
+            'dynamodb:GetItem',
+            'dynamodb:DeleteItem',
+            'dynamodb:Query',
+            'dynamodb:BatchWriteItem',
+          ],
+          Resource: [
+            this.sessionsTable.tableArn,
+            `${this.sessionsTable.tableArn}/index/userId-index`,
+          ],
         },
       ],
     };

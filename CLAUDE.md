@@ -24,7 +24,8 @@ This is an AWS CDK stack for passwordless email OTP authentication using Cognito
 
 ### Stack Resources (lib/aws-cognito-stack.ts)
 
-- **DynamoDB Table**: Stores OTP codes with TTL for automatic expiration
+- **DynamoDB OTP Table**: Stores OTP codes with TTL for automatic expiration
+- **DynamoDB Sessions Table**: Server-side session storage for refresh tokens (encrypted, GSI for userId)
 - **Cognito User Pool**: Email-only sign-in, custom auth enabled, no auto-verify
 - **User Pool Client**: Custom auth and SRP flows enabled
 
@@ -51,6 +52,7 @@ Stack name is set via `STACK_NAME` environment variable. CDK auto-generates uniq
 
 - `userPoolId` - Cognito User Pool ID
 - `userPoolClientId` - User Pool Client ID
-- `otpTableName` - DynamoDB table name
+- `otpTableName` - DynamoDB OTP table name
+- `sessionsTableName` - DynamoDB sessions table name
 - `region` - AWS region
 - `iamPolicyForCognito` - IAM policy JSON for consuming applications

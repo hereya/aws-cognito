@@ -11,8 +11,8 @@ describe('AwsCognitoStack', () => {
     template = Template.fromStack(stack);
   });
 
-  describe('DynamoDB Table', () => {
-    test('creates table with correct partition key', () => {
+  describe('DynamoDB OTP Table', () => {
+    test('creates table with email partition key', () => {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
         KeySchema: [
           {
@@ -41,6 +41,49 @@ describe('AwsCognitoStack', () => {
     test('uses PAY_PER_REQUEST billing mode', () => {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
         BillingMode: 'PAY_PER_REQUEST',
+      });
+    });
+  });
+
+  describe('DynamoDB Sessions Table', () => {
+    test('creates table with sessionId partition key', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', {
+        KeySchema: [
+          {
+            AttributeName: 'sessionId',
+            KeyType: 'HASH',
+          },
+        ],
+        AttributeDefinitions: Match.arrayWith([
+          {
+            AttributeName: 'sessionId',
+            AttributeType: 'S',
+          },
+        ]),
+      });
+    });
+
+    test('has GSI on userId for logout everywhere', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', {
+        GlobalSecondaryIndexes: Match.arrayWith([
+          Match.objectLike({
+            IndexName: 'userId-index',
+            KeySchema: [
+              {
+                AttributeName: 'userId',
+                KeyType: 'HASH',
+              },
+            ],
+          }),
+        ]),
+      });
+    });
+
+    test('has server-side encryption enabled', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', {
+        SSESpecification: {
+          SSEEnabled: true,
+        },
       });
     });
   });
@@ -236,6 +279,12 @@ describe('AwsCognitoStack', () => {
     test('has otpTableName output', () => {
       template.hasOutput('otpTableName', {
         Description: 'DynamoDB OTP Table Name',
+      });
+    });
+
+    test('has sessionsTableName output', () => {
+      template.hasOutput('sessionsTableName', {
+        Description: 'DynamoDB Sessions Table Name',
       });
     });
 
