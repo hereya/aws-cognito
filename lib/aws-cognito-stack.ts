@@ -151,6 +151,9 @@ export class AwsCognitoStack extends cdk.Stack {
         custom: true,
         userSrp: true,
       },
+      idTokenValidity: cdk.Duration.days(1),
+      accessTokenValidity: cdk.Duration.days(1),
+      refreshTokenValidity: cdk.Duration.days(30),
     });
 
     // CDK Outputs
