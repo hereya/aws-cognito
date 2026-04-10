@@ -1,5 +1,5 @@
 name: aws/cognito
-version: 0.2.1
+version: 0.2.2
 description: "AWS Cognito passwordless email OTP authentication package"
 visibility: public
 iac: cdk
