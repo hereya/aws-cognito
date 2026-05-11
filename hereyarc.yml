@@ -1,5 +1,5 @@
 name: aws/cognito
-version: 0.3.1
+version: 0.3.2
 description: "AWS Cognito passwordless email OTP authentication, plus DynamoDB-backed RBAC user + role tables for authorization."
 visibility: public
 iac: cdk

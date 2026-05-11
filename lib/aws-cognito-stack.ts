@@ -220,12 +220,25 @@ export class AwsCognitoStack extends cdk.Stack {
       description: 'AWS Region',
     });
 
-    // IAM Policy for applications using these resources
+    // One application policy covering Cognito API + all three DDB tables
+    // (sessions, auth users, auth roles) + their GSIs. Merged into a single
+    // output to stay under the 2KB inline-policy limit when this gets
+    // attached as part of a hereya/dev-iam-user.
+    //
+    // Action set is the union of what the app code uses across all tables:
+    //   • PutItem / GetItem / DeleteItem / Query — sessions (server-side
+    //     session storage, "logout everywhere" GSI scan).
+    //   • UpdateItem / Scan / TransactWriteItems — auth users (suspend
+    //     toggle, admin list, first-user-admin transaction).
+    //   • BatchWriteItem — sessions (BatchWriteCommand on logout-everywhere
+    //     paths) and admin tooling.
+    //
+    // Index ARNs use /index/* wildcards so a future GSI added to either
+    // table works without policy bumps.
     const appPolicy = {
       Version: '2012-10-17',
       Statement: [
         {
-          Sid: 'CognitoAuthOperations',
           Effect: 'Allow',
           Action: [
             'cognito-idp:SignUp',
@@ -241,56 +254,6 @@ export class AwsCognitoStack extends cdk.Stack {
           Resource: this.userPool.userPoolArn,
         },
         {
-          Sid: 'SessionsTableOperations',
-          Effect: 'Allow',
-          Action: [
-            'dynamodb:PutItem',
-            'dynamodb:GetItem',
-            'dynamodb:DeleteItem',
-            'dynamodb:Query',
-            'dynamodb:BatchWriteItem',
-          ],
-          Resource: [
-            this.sessionsTable.tableArn,
-            `${this.sessionsTable.tableArn}/index/userId-index`,
-          ],
-        },
-      ],
-    };
-
-    new cdk.CfnOutput(this, 'iamPolicyForCognito', {
-      value: JSON.stringify(appPolicy),
-      description: 'IAM policy for applications to use Cognito authentication',
-    });
-
-    // -----------------------------------------------------------------------
-    // RBAC table outputs + IAM policy
-    //
-    // `iamPolicyAuthRbac` is auto-attached to the consumer's Lambda role and
-    // to dev IAM users via hereya's iamPolicy* convention. Includes Scan
-    // (admin "list users" page and the count-active-admins safeguard), tightly
-    // scoped to these two tables + the email GSI.
-    // -----------------------------------------------------------------------
-
-    new cdk.CfnOutput(this, 'authUsersTableName', {
-      value: this.authUsersTable.tableName,
-      description: 'DynamoDB table holding the authoritative user records',
-    });
-
-    new cdk.CfnOutput(this, 'authRolesTableName', {
-      value: this.authRolesTable.tableName,
-      description: 'DynamoDB table holding role definitions (permissions per role)',
-    });
-
-    // Compact policy: one statement, one action list, three resources.
-    // IAM has a 2KB hard limit on the SUM of a user's inline policies.
-    // Dropped BatchGetItem + ConditionCheckItem — unused by the auth/users
-    // and auth/roles modules. Actions are listed in the order the app uses
-    // them so a future audit can map them back trivially.
-    const rbacPolicy = {
-      Version: '2012-10-17',
-      Statement: [
-        {
           Effect: 'Allow',
           Action: [
             'dynamodb:GetItem',
@@ -303,18 +266,33 @@ export class AwsCognitoStack extends cdk.Stack {
             'dynamodb:TransactWriteItems',
           ],
           Resource: [
+            this.sessionsTable.tableArn,
+            `${this.sessionsTable.tableArn}/index/*`,
             this.authUsersTable.tableArn,
-            `${this.authUsersTable.tableArn}/index/email-index`,
+            `${this.authUsersTable.tableArn}/index/*`,
             this.authRolesTable.tableArn,
           ],
         },
       ],
     };
 
-    new cdk.CfnOutput(this, 'iamPolicyAuthRbac', {
-      value: JSON.stringify(rbacPolicy),
+    new cdk.CfnOutput(this, 'iamPolicyForCognito', {
+      value: JSON.stringify(appPolicy),
+      description: 'IAM policy for applications to use Cognito authentication',
+    });
+
+    // RBAC table names — auth users + roles. Permissions for these tables
+    // are folded into the single iamPolicyForCognito above (kept as one
+    // output to stay within IAM's 2KB inline-policy limit on the dev user).
+    new cdk.CfnOutput(this, 'authUsersTableName', {
+      value: this.authUsersTable.tableName,
+      description: 'DynamoDB table holding the authoritative user records',
+    });
+
+    new cdk.CfnOutput(this, 'authRolesTableName', {
+      value: this.authRolesTable.tableName,
       description:
-        'IAM policy granting CRUD + Query/Scan on the auth users + roles DDB tables',
+        'DynamoDB table holding role definitions (permissions per role)',
     });
   }
 }
