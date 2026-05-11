@@ -70,6 +70,21 @@ export class AwsCognitoStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI by role: lets countActiveAdmins (called on every admin "suspend"
+    // PATCH) Query the admin partition directly instead of Scan-ing the
+    // whole table. Cost goes from O(total users) to O(admin count). Sparse
+    // by design — the __bootstrap__ sentinel has no roleName attribute and
+    // therefore doesn't appear in this GSI.
+    //
+    // Same shape (PK + createdAt SK) is reusable for future "list users
+    // with role X" features without another index.
+    this.authUsersTable.addGlobalSecondaryIndex({
+      indexName: 'byRole-index',
+      partitionKey: { name: 'roleName', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     this.authRolesTable = new dynamodb.Table(this, 'AuthRolesTable', {
       partitionKey: { name: 'roleName', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
