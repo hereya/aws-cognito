@@ -282,11 +282,15 @@ export class AwsCognitoStack extends cdk.Stack {
       description: 'DynamoDB table holding role definitions (permissions per role)',
     });
 
+    // Compact policy: one statement, one action list, three resources.
+    // IAM has a 2KB hard limit on the SUM of a user's inline policies.
+    // Dropped BatchGetItem + ConditionCheckItem — unused by the auth/users
+    // and auth/roles modules. Actions are listed in the order the app uses
+    // them so a future audit can map them back trivially.
     const rbacPolicy = {
       Version: '2012-10-17',
       Statement: [
         {
-          Sid: 'AuthUsersTableAccess',
           Effect: 'Allow',
           Action: [
             'dynamodb:GetItem',
@@ -296,31 +300,13 @@ export class AwsCognitoStack extends cdk.Stack {
             'dynamodb:Query',
             'dynamodb:Scan',
             'dynamodb:BatchWriteItem',
-            'dynamodb:BatchGetItem',
             'dynamodb:TransactWriteItems',
-            'dynamodb:ConditionCheckItem',
           ],
           Resource: [
             this.authUsersTable.tableArn,
             `${this.authUsersTable.tableArn}/index/email-index`,
+            this.authRolesTable.tableArn,
           ],
-        },
-        {
-          Sid: 'AuthRolesTableAccess',
-          Effect: 'Allow',
-          Action: [
-            'dynamodb:GetItem',
-            'dynamodb:PutItem',
-            'dynamodb:UpdateItem',
-            'dynamodb:DeleteItem',
-            'dynamodb:Query',
-            'dynamodb:Scan',
-            'dynamodb:BatchWriteItem',
-            'dynamodb:BatchGetItem',
-            'dynamodb:TransactWriteItems',
-            'dynamodb:ConditionCheckItem',
-          ],
-          Resource: [this.authRolesTable.tableArn],
         },
       ],
     };
