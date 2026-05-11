@@ -12,6 +12,8 @@ export class AwsCognitoStack extends cdk.Stack {
   public readonly userPoolClient: cognito.UserPoolClient;
   public readonly otpTable: dynamodb.Table;
   public readonly sessionsTable: dynamodb.Table;
+  public readonly authUsersTable: dynamodb.Table;
+  public readonly authRolesTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -37,6 +39,42 @@ export class AwsCognitoStack extends cdk.Stack {
     this.sessionsTable.addGlobalSecondaryIndex({
       indexName: 'userId-index',
       partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+    });
+
+    // -----------------------------------------------------------------------
+    // RBAC tables (DDB is the authorization DB)
+    //
+    // The application owns identity & authorization records here, so authz
+    // checks never wake Aurora. Cognito remains authn-only.
+    //
+    //   AuthUsersTable  — one item per user (id, email, roleName, suspended,
+    //                     cognitoSub, createdAt). GSI on email for lookup.
+    //                     Also stores a `__bootstrap__` sentinel item to make
+    //                     first-user-admin assignment exactly-once.
+    //
+    //   AuthRolesTable  — one item per role (roleName, permissions Set,
+    //                     description). Lookup by name only.
+    // -----------------------------------------------------------------------
+
+    this.authUsersTable = new dynamodb.Table(this, 'AuthUsersTable', {
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // GSI to look up a user by email (signup gating, allowlist add).
+    this.authUsersTable.addGlobalSecondaryIndex({
+      indexName: 'email-index',
+      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    this.authRolesTable = new dynamodb.Table(this, 'AuthRolesTable', {
+      partitionKey: { name: 'roleName', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // Common Lambda configuration
@@ -223,6 +261,74 @@ export class AwsCognitoStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'iamPolicyForCognito', {
       value: JSON.stringify(appPolicy),
       description: 'IAM policy for applications to use Cognito authentication',
+    });
+
+    // -----------------------------------------------------------------------
+    // RBAC table outputs + IAM policy
+    //
+    // `iamPolicyAuthRbac` is auto-attached to the consumer's Lambda role and
+    // to dev IAM users via hereya's iamPolicy* convention. Includes Scan
+    // (admin "list users" page and the count-active-admins safeguard), tightly
+    // scoped to these two tables + the email GSI.
+    // -----------------------------------------------------------------------
+
+    new cdk.CfnOutput(this, 'authUsersTableName', {
+      value: this.authUsersTable.tableName,
+      description: 'DynamoDB table holding the authoritative user records',
+    });
+
+    new cdk.CfnOutput(this, 'authRolesTableName', {
+      value: this.authRolesTable.tableName,
+      description: 'DynamoDB table holding role definitions (permissions per role)',
+    });
+
+    const rbacPolicy = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Sid: 'AuthUsersTableAccess',
+          Effect: 'Allow',
+          Action: [
+            'dynamodb:GetItem',
+            'dynamodb:PutItem',
+            'dynamodb:UpdateItem',
+            'dynamodb:DeleteItem',
+            'dynamodb:Query',
+            'dynamodb:Scan',
+            'dynamodb:BatchWriteItem',
+            'dynamodb:BatchGetItem',
+            'dynamodb:TransactWriteItems',
+            'dynamodb:ConditionCheckItem',
+          ],
+          Resource: [
+            this.authUsersTable.tableArn,
+            `${this.authUsersTable.tableArn}/index/email-index`,
+          ],
+        },
+        {
+          Sid: 'AuthRolesTableAccess',
+          Effect: 'Allow',
+          Action: [
+            'dynamodb:GetItem',
+            'dynamodb:PutItem',
+            'dynamodb:UpdateItem',
+            'dynamodb:DeleteItem',
+            'dynamodb:Query',
+            'dynamodb:Scan',
+            'dynamodb:BatchWriteItem',
+            'dynamodb:BatchGetItem',
+            'dynamodb:TransactWriteItems',
+            'dynamodb:ConditionCheckItem',
+          ],
+          Resource: [this.authRolesTable.tableArn],
+        },
+      ],
+    };
+
+    new cdk.CfnOutput(this, 'iamPolicyAuthRbac', {
+      value: JSON.stringify(rbacPolicy),
+      description:
+        'IAM policy granting CRUD + Query/Scan on the auth users + roles DDB tables',
     });
   }
 }
